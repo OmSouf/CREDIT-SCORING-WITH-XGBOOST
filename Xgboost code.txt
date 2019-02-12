@@ -1,0 +1,156 @@
+library(tidyverse)
+library(magrittr)
+library(caret)
+library(xgboost)
+library(knitr)
+set.seed(0)
+
+#############################################################################
+bureau_balance <- read_csv("C:/Users/Soufiane/Documents/input/bureau_balance.csv") %>% 
+  mutate_if(is.character, funs(factor(.) %>% as.integer())) 
+
+avg_bureau_balance <- bureau_balance %>% 
+  group_by(SK_ID_BUREAU) %>% 
+  summarise_all(funs(mean(., na.rm = TRUE))) %>% 
+  mutate(buro_count = bureau_balance %>%  
+           group_by(SK_ID_BUREAU) %>% 
+           count() %$% n)
+		   
+#############################################################################
+bureau <- read_csv("C:/Users/soufiane/Documents/input/bureau.csv") %>% 
+  mutate_if(is.character, funs(factor(.) %>% as.integer())) 
+
+bureau_final <- left_join(bureau, avg_bureau_balance, by = "SK_ID_BUREAU")
+
+avg_bureau_final <- bureau_final %>% 
+  group_by(SK_ID_CURR) %>% 
+  summarise_all(funs(mean(., na.rm = TRUE))) %>% 
+  mutate(buro_count = bureau_final %>%  
+           group_by(SK_ID_CURR) %>% 
+           count() %$% n)
+
+rm(avg_bureau_balance,bureau,bureau_balance,bureau_final)
+gc()
+
+#############################################################################
+cred_card_bal <-  read_csv("C:/Users/soufiane/Documents/input/credit_card_balance.csv") %>% 
+  mutate_if(is.character, funs(factor(.) %>% as.integer())) 
+
+avg_cred_card_bal <- cred_card_bal %>%
+  group_by(SK_ID_CURR) %>%
+  summarise_all(funs(mean(., na.rm = TRUE))) %>%
+  mutate(card_count = cred_card_bal %>%
+           group_by(SK_ID_CURR) %>%
+           count() %$% n)
+
+rm(cred_card_bal)
+gc()
+
+#############################################################################
+pos_cash_bal <- read_csv("C:/Users/soufiane/Documents/input/POS_CASH_balance.csv") %>% 
+  mutate_if(is.character, funs(factor(.) %>% as.integer())) 
+
+avg_pos_cash_bal <- pos_cash_bal %>%
+  group_by(SK_ID_CURR) %>%
+  summarise_all(funs(mean(., na.rm = TRUE))) %>%
+  mutate(pos_count = pos_cash_bal %>%
+           group_by(SK_ID_PREV, SK_ID_CURR) %>%
+           group_by(SK_ID_CURR) %>%
+           count() %$% n)
+
+rm(pos_cash_bal)
+gc()
+
+#############################################################################
+prev <- read_csv("C:/Users/soufiane/Documents/input/previous_application.csv") %>% 
+  mutate_if(is.character, funs(factor(.) %>% as.integer())) 
+
+avg_prev <- prev %>%
+  group_by(SK_ID_CURR) %>%
+  summarise_all(funs(mean(., na.rm = TRUE))) %>%
+  mutate(nb_app = prev %>%
+           group_by(SK_ID_CURR) %>%
+           count() %$% n)
+
+rm(prev)
+gc()
+
+#############################################################################
+installments_payments <- read_csv("C:/Users/soufiane/Documents/input/installments_payments.csv") %>% 
+  mutate_if(is.character, funs(factor(.) %>% as.integer())) 
+
+avg_installments_payments <- installments_payments %>%
+  group_by(SK_ID_CURR) %>%
+  summarise_all(funs(mean(., na.rm = TRUE))) %>%
+  mutate(pos_count = installments_payments %>%
+           group_by(SK_ID_PREV, SK_ID_CURR) %>%
+           group_by(SK_ID_CURR) %>%
+           count() %$% n)
+
+rm(installments_payments)
+gc()
+
+#############################################################################
+tr <- read_csv("C:/Users/soufiane/Documents/input/application_train.csv")%>% 
+  mutate_if(is.character, funs(factor(.) %>% as.integer())) 
+
+te <- read_csv("C:/Users/soufiane/Documents/input/application_test.csv")%>% 
+  mutate_if(is.character, funs(factor(.) %>% as.integer())) 
+
+#############################################################################
+
+tri <- 1:nrow(tr)
+y <- tr$TARGET
+
+tr_te <- tr %>% 
+  select(-TARGET) %>% 
+  bind_rows(te) %>%
+  left_join(avg_bureau_final, by = "SK_ID_CURR") %>% 
+  left_join(avg_cred_card_bal, by = "SK_ID_CURR") %>% 
+  left_join(avg_pos_cash_bal, by = "SK_ID_CURR") %>% 
+  left_join(avg_prev, by = "SK_ID_CURR") %>% 
+  left_join(avg_installments_payments, by = "SK_ID_CURR") %>% 
+  mutate_if(is.character, funs(factor(.) %>% as.integer()))
+######################################################
+rm(avg_bureau_final,avg_cred_card_bal,avg_pos_cash_bal,avg_prev,avg_installments_payments,tr,te)
+gc()
+#######################################################
+write_csv(datatrain, "C:/Users/soufiane/Documents/input/datatrain.csv")
+write_csv(dtest, "C:/Users/soufiane/Documents/input/dtest.csv")
+
+rm(datatrain)
+gc()
+
+set.seed(123)
+dtest <- tr_te[-tri, ]
+tr_te <- tr_te[tri, ]
+datatrain=tr_te
+tr_te<-tr_te[,-207]
+tr_te=as.matrix(tr_te)
+
+tri <- caret::createDataPartition(y, p = 0.9, list = F) %>% c()
+dtrain <- xgb.DMatrix(data = tr_te[tri, ], label = y[tri], missing = 'NAN')
+dval <- xgb.DMatrix(data = tr_te[-tri, ], label = y[-tri], missing = 'NAN')
+cols <- colnames(tr_te)
+
+rm(tr_te, y, tri); gc()
+####################################################
+# training
+cat("Training model...\n")
+p <- list(objective = "binary:logistic",
+          booster = "gbtree",
+          eval_metric = "auc",
+          nthread = 10,
+          eta = 0.05,
+          max_depth = 8,
+          max_delta_step = 6,
+          min_child_weight = 16,
+          gamma = 0,
+          subsample = 0.75,
+          colsample_bytree = 0.75,
+          alpha = 0.025,
+          lambda = 0.025,
+          nrounds = 3000)
+
+m_xgb <- xgb.train(p, dtrain, p$nrounds, list(val = dval), print_every_n = 50, early_stopping_rounds = 200)
+
